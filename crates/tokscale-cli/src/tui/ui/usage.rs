@@ -495,6 +495,20 @@ fn account_header_uses_email(output: &UsageOutput) -> bool {
 }
 
 fn metric_line(app: &App, metric: &UsageMetric, indent: &str) -> Line<'static> {
+    if metric.remaining_percent < 0.0 {
+        // Text-only child metric — no bar, no reset
+        let text = metric.remaining_label.clone().unwrap_or_default();
+        let label = Span::styled(
+            format!("{indent}{:<14}", metric.label),
+            Style::default().fg(app.theme.muted),
+        );
+        let value = Span::styled(
+            format!("{:<35}", text),
+            Style::default().fg(app.theme.muted),
+        );
+        return Line::from(vec![label, value]);
+    }
+
     let remaining = metric
         .remaining_label
         .clone()
