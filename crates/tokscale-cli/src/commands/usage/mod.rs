@@ -250,19 +250,28 @@ fn render_light(output: &UsageOutput) {
         width = CARD_WIDTH - 1
     );
     for m in &output.metrics {
-        let rem = m
-            .remaining_label
-            .clone()
-            .unwrap_or_else(|| format!("{:.0}% left", m.remaining_percent));
-        let rem = truncate(&rem, 11);
-        let bar = helpers::render_ascii_bar(m.remaining_percent, BAR_WIDTH);
-        let reset = m
-            .resets_at
-            .as_ref()
-            .map(|r| helpers::format_reset_time(r))
-            .unwrap_or_default();
-        let label = truncate(&m.label, 14);
-        println!("│ {:<14}{:<11}{:<14}{:<22}│", label, rem, bar, reset);
+        if m.remaining_percent < 0.0 {
+            // Text-only child metric — no bar, no reset column
+            let text = m.remaining_label.as_deref().unwrap_or("");
+            let text = truncate(text, 47);
+            let label = truncate(&m.label, 14);
+            println!("│ {:<14}{:<47}│", label, text);
+        } else {
+            // Normal metric with bar (existing code, unchanged)
+            let rem = m
+                .remaining_label
+                .clone()
+                .unwrap_or_else(|| format!("{:.0}% left", m.remaining_percent));
+            let rem = truncate(&rem, 11);
+            let bar = helpers::render_ascii_bar(m.remaining_percent, BAR_WIDTH);
+            let reset = m
+                .resets_at
+                .as_ref()
+                .map(|r| helpers::format_reset_time(r))
+                .unwrap_or_default();
+            let label = truncate(&m.label, 14);
+            println!("│ {:<14}{:<11}{:<14}{:<22}│", label, rem, bar, reset);
+        }
     }
     if let Some(ref email) = output.email {
         let email = truncate(email, CARD_WIDTH - 11);
