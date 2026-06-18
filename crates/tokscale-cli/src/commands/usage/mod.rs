@@ -249,30 +249,68 @@ fn render_light(output: &UsageOutput) {
         output.display_name(),
         width = CARD_WIDTH - 1
     );
-    for m in &output.metrics {
-        if m.remaining_percent < 0.0 {
-            // Text-only child metric — no bar, no reset column
-            let text = m.remaining_label.as_deref().unwrap_or("");
-            let text = truncate(text, 47);
-            let label = truncate(&m.label, 14);
-            println!("│ {:<14}{:<47}│", label, text);
-        } else {
-            // Normal metric with bar (existing code, unchanged)
-            let rem = m
+
+    // Render metrics in pairs (2 per line)
+    for chunk in output.metrics.chunks(2) {
+        let m1 = &chunk[0];
+        let m2 = chunk.get(1);
+
+        if m1.remaining_percent < 0.001 && (m2.is_none() || m2.unwrap().remaining_percent < 0.001) {
+            // Both are text-only child metrics
+            let text1 = m1.remaining_label.as_deref().unwrap_or("");
+            let text1 = truncate(text1, 24);
+            let label1 = truncate(&m1.label, 10);
+
+            if let Some(m2) = m2 {
+                let text2 = m2.remaining_label.as_deref().unwrap_or("");
+                let text2 = truncate(text2, 24);
+                let label2 = truncate(&m2.label, 10);
+                println!("│ {:<10}{:<24}{:<10}{:<24}│", label1, text1, label2, text2);
+            } else {
+                println!("│ {:<10}{:<24}│", label1, text1);
+            }
+        } else if m1.remaining_percent >= 0.0
+            && (m2.is_none() || m2.unwrap().remaining_percent >= 0.0)
+        {
+            // Both have bars
+            let rem1 = m1
                 .remaining_label
                 .clone()
-                .unwrap_or_else(|| format!("{:.0}% left", m.remaining_percent));
-            let rem = truncate(&rem, 11);
-            let bar = helpers::render_ascii_bar(m.remaining_percent, BAR_WIDTH);
-            let reset = m
-                .resets_at
-                .as_ref()
-                .map(|r| helpers::format_reset_time(r))
-                .unwrap_or_default();
-            let label = truncate(&m.label, 14);
-            println!("│ {:<14}{:<11}{:<14}{:<22}│", label, rem, bar, reset);
+                .unwrap_or_else(|| format!("{:.0}% left", m1.remaining_percent));
+            let rem1 = truncate(&rem1, 7);
+            let bar1 = helpers::render_ascii_bar(m1.remaining_percent, BAR_WIDTH);
+            let label1 = truncate(&m1.label, 7);
+
+            if let Some(m2) = m2 {
+                let rem2 = m2
+                    .remaining_label
+                    .clone()
+                    .unwrap_or_else(|| format!("{:.0}% left", m2.remaining_percent));
+                let rem2 = truncate(&rem2, 7);
+                let bar2 = helpers::render_ascii_bar(m2.remaining_percent, BAR_WIDTH);
+                let label2 = truncate(&m2.label, 7);
+                println!(
+                    "│ {:<7}{:<7}{:<12}{:<7}{:<7}{:<12}│",
+                    label1, rem1, bar1, label2, rem2, bar2
+                );
+            } else {
+                println!("│ {:<7}{:<7}{:<12}│", label1, rem1, bar1);
+            }
+        } else {
+            // Mixed types or other cases — fall back to original single-line rendering
+            let text = m1.remaining_label.as_deref().unwrap_or("");
+            let text = truncate(text, 47);
+            let label = truncate(&m1.label, 14);
+            println!("│ {:<14}{:<47}│", label, text);
+            if let Some(m2) = m2 {
+                let text2 = m2.remaining_label.as_deref().unwrap_or("");
+                let text2 = truncate(text2, 47);
+                let label2 = truncate(&m2.label, 14);
+                println!("│ {:<14}{:<47}│", label2, text2);
+            }
         }
     }
+
     if let Some(ref email) = output.email {
         let email = truncate(email, CARD_WIDTH - 11);
         println!(

@@ -464,8 +464,18 @@ fn push_output_details(
     email_label: &str,
     skip_email: bool,
 ) {
-    for metric in &output.metrics {
-        lines.push(metric_line(app, metric, indent));
+    let mut i = 0;
+    let metrics = &output.metrics;
+    while i < metrics.len() {
+        let m = &metrics[i];
+        // Pair consecutive child metrics (remaining_percent < 0) side by side
+        if m.remaining_percent < 0.0 && i + 1 < metrics.len() && metrics[i + 1].remaining_percent < 0.0 {
+            lines.push(metric_line_pair(app, m, &metrics[i + 1], indent));
+            i += 2;
+        } else {
+            lines.push(metric_line(app, m, indent));
+            i += 1;
+        }
     }
 
     if !skip_email {
@@ -492,6 +502,28 @@ fn account_header_uses_email(output: &UsageOutput) -> bool {
         .map(str::trim)
         .filter(|email| !email.is_empty())
         .is_some()
+}
+
+fn metric_line_pair(app: &App, m1: &UsageMetric, m2: &UsageMetric, indent: &str) -> Line<'static> {
+    let text1 = m1.remaining_label.clone().unwrap_or_default();
+    let text2 = m2.remaining_label.clone().unwrap_or_default();
+    let label1 = Span::styled(
+        format!("{indent}{:<12}", m1.label),
+        Style::default().fg(app.theme.muted),
+    );
+    let value1 = Span::styled(
+        format!("{:<22}", text1),
+        Style::default().fg(app.theme.muted),
+    );
+    let label2 = Span::styled(
+        format!("{:<12}", m2.label),
+        Style::default().fg(app.theme.muted),
+    );
+    let value2 = Span::styled(
+        format!("{:<22}", text2),
+        Style::default().fg(app.theme.muted),
+    );
+    Line::from(vec![label1, value1, label2, value2])
 }
 
 fn metric_line(app: &App, metric: &UsageMetric, indent: &str) -> Line<'static> {
