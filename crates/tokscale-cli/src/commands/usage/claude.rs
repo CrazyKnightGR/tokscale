@@ -1,5 +1,6 @@
 use anyhow::Result;
 use serde::Deserialize;
+use tokscale_core::{parse_local_unified_messages, LocalParseOptions};
 
 use super::helpers::capitalize;
 use super::{UsageMetric, UsageOutput};
@@ -156,6 +157,83 @@ fn window_metric(label: &str, w: &Window) -> UsageMetric {
     }
 }
 
+fn fmt_tokens(t: u64) -> String {
+    if t >= 100_000 {
+        format!("{:.0}k", t as f64 / 1_000.0)
+    } else if t >= 1_000 {
+        format!("{:.1}k", t as f64 / 1_000.0)
+    } else {
+        t.to_string()
+    }
+}
+
+fn fmt_duration(mins: f64) -> String {
+    if mins < 60.0 {
+        format!("in {:.0}m", mins)
+    } else if mins < 1440.0 {
+        format!("in {:.1}h", mins / 60.0)
+    } else {
+        format!("in {:.1}d", mins / 1440.0)
+    }
+}
+
+fn build_child_metrics(
+    include_tokens: bool,
+    token_limit: Option<u64>,
+    tokens_used: Option<u64>,
+    burn: Option<(f64, f64)>, // (tokens_per_min, cost_per_min)
+    include_runs_out: bool,
+) -> Vec<UsageMetric> {
+    let mut children = Vec::new();
+
+    if include_tokens {
+        if let (Some(used), Some(limit)) = (tokens_used, token_limit) {
+            children.push(UsageMetric {
+                label: "  Tokens".into(),
+                used_percent: 0.0,
+                remaining_percent: -1.0,
+                remaining_label: Some(format!("{}/{} used", fmt_tokens(used), fmt_tokens(limit))),
+                resets_at: None,
+            });
+        }
+    }
+
+    if let Some((tokens_per_min, cost_per_min)) = burn {
+        children.push(UsageMetric {
+            label: "  Burn Rate".into(),
+            used_percent: 0.0,
+            remaining_percent: -1.0,
+            remaining_label: Some(format!("{:.1}k tok/min", tokens_per_min / 1000.0)),
+            resets_at: None,
+        });
+        children.push(UsageMetric {
+            label: "  Cost Rate".into(),
+            used_percent: 0.0,
+            remaining_percent: -1.0,
+            remaining_label: Some(format!("${:.4}/min", cost_per_min)),
+            resets_at: None,
+        });
+
+        if include_runs_out && tokens_per_min > 0.0 {
+            if let (Some(limit), Some(used)) = (token_limit, tokens_used) {
+                if limit > used {
+                    let remaining_tokens = limit - used;
+                    let mins = remaining_tokens as f64 / tokens_per_min;
+                    children.push(UsageMetric {
+                        label: "  Runs Out".into(),
+                        used_percent: 0.0,
+                        remaining_percent: -1.0,
+                        remaining_label: Some(fmt_duration(mins)),
+                        resets_at: None,
+                    });
+                }
+            }
+        }
+    }
+
+    children
+}
+
 pub fn fetch() -> Result<UsageOutput> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -179,6 +257,20 @@ pub fn fetch() -> Result<UsageOutput> {
                 None => capitalize(s),
             }
         });
+
+        // Determine session token limit from subscription type and rate_limit_tier
+        let session_token_limit: Option<u64> = match (
+            oauth.subscription_type.as_deref(),
+            oauth
+                .rate_limit_tier
+                .as_deref()
+                .and_then(|t| t.rsplit('_').next()),
+        ) {
+            (Some("pro"), _) => Some(19_000),
+            (Some("max"), Some("5")) => Some(88_000),
+            (Some("max"), Some("20")) => Some(220_000),
+            _ => None,
+        };
 
         let client = reqwest::Client::new();
         let resp = match fetch_usage(&client, &access_token).await {
@@ -206,13 +298,74 @@ pub fn fetch() -> Result<UsageOutput> {
             Err(e) => return Err(e),
         };
 
+        // Compute session tokens used
+        let session_tokens_used: Option<u64> = resp.five_hour.as_ref().and_then(|w| {
+            session_token_limit
+                .map(|limit| (w.utilization / 100.0 * limit as f64) as u64)
+        });
+
+        // Local scan for burn rate (last 60 minutes)
+        let burn: Option<(f64, f64)> = {
+            let parse_result = parse_local_unified_messages(LocalParseOptions {
+                clients: Some(vec!["claude".to_string()]),
+                ..Default::default()
+            })
+            .await;
+
+            match parse_result {
+                Ok(messages) if !messages.is_empty() => {
+                    let now_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as i64;
+                    let one_hour_ago_ms = now_ms - 3_600_000;
+                    let recent: Vec<_> = messages
+                        .iter()
+                        .filter(|m| m.timestamp >= one_hour_ago_ms)
+                        .collect();
+
+                    if recent.is_empty() {
+                        None
+                    } else {
+                        let total_tokens: i64 = recent
+                            .iter()
+                            .map(|m| {
+                                m.tokens.input
+                                    + m.tokens.output
+                                    + m.tokens.cache_read
+                                    + m.tokens.cache_write
+                            })
+                            .sum();
+                        let total_cost: f64 = recent.iter().map(|m| m.cost).sum();
+                        let tokens_per_min = total_tokens as f64 / 60.0;
+                        let cost_per_min = total_cost / 60.0;
+                        Some((tokens_per_min, cost_per_min))
+                    }
+                }
+                _ => None,
+            }
+        };
+
         let mut metrics = Vec::new();
+
         if let Some(ref w) = resp.five_hour {
             metrics.push(window_metric("Session", w));
+            let children = build_child_metrics(
+                true,
+                session_token_limit,
+                session_tokens_used,
+                burn,
+                true,
+            );
+            metrics.extend(children);
         }
+
         if let Some(ref w) = resp.seven_day {
             metrics.push(window_metric("Weekly", w));
+            let children = build_child_metrics(false, None, None, burn, false);
+            metrics.extend(children);
         }
+
         if let Some(ref w) = resp.seven_day_opus {
             metrics.push(window_metric("Opus", w));
         }
