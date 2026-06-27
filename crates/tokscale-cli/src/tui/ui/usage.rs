@@ -469,7 +469,10 @@ fn push_output_details(
     while i < metrics.len() {
         let m = &metrics[i];
         // Pair consecutive child metrics (remaining_percent < 0) side by side
-        if m.remaining_percent < 0.0 && i + 1 < metrics.len() && metrics[i + 1].remaining_percent < 0.0 {
+        if m.remaining_percent < 0.0
+            && i + 1 < metrics.len()
+            && metrics[i + 1].remaining_percent < 0.0
+        {
             lines.push(metric_line_pair(app, m, &metrics[i + 1], indent));
             i += 2;
         } else {
